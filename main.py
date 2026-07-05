@@ -36,15 +36,33 @@ def call_llm(prompt: str):
         timeout=30
     )
     return res.json()["response"]
+def extract_vendor(text: str):
+    patterns = [
+        r"Vendor[:\-]?\s*(.+)",
+        r"Bill From[:\-]?\s*(.+)",
+        r"Invoice from[:\-]?\s*(.+)",
+    ]
+
+    for p in patterns:
+        match = re.search(p, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+
+    # fallback: look for Acme-like structured name first
+    match = re.search(r"[A-Z][A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-&]+){0,5}", text)
+    if match:
+        return match.group(0).strip()
+
+    return "Unknown"
 
 def extract_fallback(text: str):
     import re
 
-    # ✅ improved vendor extraction (VERY IMPORTANT)
+    # improved vendor extraction (VERY IMPORTANT)
     vendor_match = re.search(r"Invoice from\s+([A-Za-z0-9\-\s]+)", text)
 
     if vendor_match:
-        vendor = vendor_match.group(1).strip()
+        vendor = extract_vendor(text) 
     else:
         # fallback: take first meaningful capitalized phrase
         vendor_match = re.search(r"([A-Z][A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+){0,3})", text)
