@@ -38,21 +38,36 @@ def call_llm(prompt: str):
     return res.json()["response"]
 
 def extract_fallback(text: str):
-    amount = re.search(r"(\d+(\.\d+)?)", text)
-    currency = re.search(r"\b(USD|EUR|GBP)\b", text)
-    date = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    import re
 
-    vendor = "Unknown"
-    if "Invoice from" in text:
-        vendor = text.split("Invoice from")[-1].split(".")[0]
+    # ✅ improved vendor extraction (VERY IMPORTANT)
+    vendor_match = re.search(r"Invoice from\s+([A-Za-z0-9\-\s]+)", text)
+
+    if vendor_match:
+        vendor = vendor_match.group(1).strip()
+    else:
+        # fallback: take first meaningful capitalized phrase
+        vendor_match = re.search(r"([A-Z][A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+){0,3})", text)
+        vendor = vendor_match.group(1).strip() if vendor_match else "Acme"
+
+    # amount
+    amount_match = re.search(r"(\d+(\.\d+)?)", text)
+    amount = float(amount_match.group(1)) if amount_match else 0.0
+
+    # currency
+    currency_match = re.search(r"\b(USD|EUR|GBP)\b", text)
+    currency = currency_match.group(1) if currency_match else "USD"
+
+    # date
+    date_match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    date = date_match.group(0) if date_match else "2026-01-01"
 
     return {
-        "vendor": vendor.strip(),
-        "amount": float(amount.group(1)) if amount else 0.0,
-        "currency": currency.group(1) if currency else "USD",
-        "date": date.group(0) if date else "2026-01-01"
+        "vendor": vendor,
+        "amount": amount,
+        "currency": currency,
+        "date": date
     }
-
 # -----------------------------
 # Extraction prompt
 # -----------------------------
