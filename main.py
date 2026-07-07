@@ -1,165 +1,67 @@
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import requests
+from pydantic import BaseModel, Field
+from typing import Optional
 import re
+from datetime import datetime
 
 app = FastAPI()
 
-# -----------------------------
-# Request schema
-# -----------------------------
-class InvoiceInput(BaseModel):
+class ExtractRequest(BaseModel):
     text: str
 
-# -----------------------------
-# Response schema (IMPORTANT)
-# -----------------------------
-class InvoiceOutput(BaseModel):
+class ExtractResponse(BaseModel):
     vendor: str
     amount: float
     currency: str
     date: str
 
-USE_LLM = False   # change to True when running locally with Ollama
+def parse_invoice_text(text: str):
 
-# -----------------------------
-# Call local LLM (Ollama example)
-# -----------------------------
-def call_llm(prompt: str):
-    res = requests.post(
-        "http://localhost:11434/api/generate",
-        json={
-            "model": "llama3.2:3b",
-            "prompt": prompt,
-            "stream": False
-        },
-        timeout=30
-    )
-    return res.json()["response"]
-def extract_vendor(text: str):
-    patterns = [
-        r"Vendor[:\-]?\s*(.+)",
-        r"Bill From[:\-]?\s*(.+)",
-        r"Invoice from[:\-]?\s*(.+)",
-    ]
+    prompt = f"""
+Extract the following fields from this invoice.
 
-    for p in patterns:
-        match = re.search(p, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
+Return ONLY valid JSON.
 
-    # fallback: look for Acme-like structured name first
-    match = re.search(r"[A-Z][A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-&]+){0,5}", text)
-    if match:
-        return match.group(0).strip()
+Schema:
 
-    return "Unknown"
-
-def extract_fallback(text: str):
-    import re
-
-    # improved vendor extraction (VERY IMPORTANT)
-    vendor_match = re.search(r"Invoice from\s+([A-Za-z0-9\-\s]+)", text)
-
-    if vendor_match:
-        vendor = extract_vendor(text) 
-    else:
-        # fallback: take first meaningful capitalized phrase
-        vendor_match = re.search(r"([A-Z][A-Za-z0-9\-]+(?:\s+[A-Za-z0-9\-]+){0,3})", text)
-        vendor = vendor_match.group(1).strip() if vendor_match else "Acme"
-
-    # amount
-    amount_match = re.search(r"(\d+(\.\d+)?)", text)
-    amount = float(amount_match.group(1)) if amount_match else 0.0
-
-    # currency
-    currency_match = re.search(r"\b(USD|EUR|GBP)\b", text)
-    currency = currency_match.group(1) if currency_match else "USD"
-
-    # date
-    date_match = re.search(r"\d{4}-\d{2}-\d{2}", text)
-    date = date_match.group(0) if date_match else "2026-01-01"
-
-    return {
-        "vendor": vendor,
-        "amount": amount,
-        "currency": currency,
-        "date": date
-    }
-# -----------------------------
-# Extraction prompt
-# -----------------------------
-def build_prompt(text: str):
-    return f"""
-Extract invoice details.
-
-Return ONLY JSON:
 {{
-  "vendor": "...",
-  "amount": 0.0,
-  "currency": "USD",
-  "date": "YYYY-MM-DD"
+    "vendor": "",
+    "amount": 0,
+    "currency": "",
+    "date": ""
 }}
 
-TEXT:
+Rules:
+
+- vendor = company/vendor name
+- amount = total amount due as a number
+- currency = 3-letter uppercase currency code
+- date = payment due date in YYYY-MM-DD format
+
+Invoice:
+
 {text}
 """
 
-# -----------------------------
-# POST /extract endpoint
-# -----------------------------
-@app.post("/extract", response_model=InvoiceOutput)
-def extract_invoice(data: InvoiceInput):
-
-    # ✅ DO NOT over-restrict input
-    if data.text is None:
-        return InvoiceOutput(
-            vendor="Unknown",
-            amount=0.0,
-            currency="USD",
-            date="2026-01-01"
-        )
-
-    text = data.text.strip()
-
-    if len(text) == 0:
-        return InvoiceOutput(
-            vendor="Unknown",
-            amount=0.0,
-            currency="USD",
-            date="2026-01-01"
-        )
-
-    # =========================
-    # SAFE EXTRACTION (NO FAIL)
-    # =========================
-
-    try:
-        if USE_LLM:
-            raw = call_llm(build_prompt(text))
-
-            # safer JSON extraction
-            import json
-            match = re.search(r"\{.*\}", raw, re.S)
-
-            if match:
-                parsed = json.loads(match.group())
-            else:
-                parsed = extract_fallback(text)
-        else:
-            parsed = extract_fallback(text)
-
-    except Exception:
-        # NEVER FAIL → grader hates 500/422 here
-        parsed = extract_fallback(text)
-
-    # =========================
-    # FINAL CLEANING
-    # =========================
-
-    return InvoiceOutput(
-        vendor=str(parsed.get("vendor", "Unknown")),
-        amount=float(parsed.get("amount", 0.0)),
-        currency=str(parsed.get("currency", "USD")).upper(),
-        date=str(parsed.get("date", "2026-01-01"))
+    response = chat(
+        model="llama3.2:3b",
+        messages=[
+            {
+                "role":"user",
+                "content":prompt
+            }
+        ]
     )
+
+    return json.loads(response.message.content)
+
+
+@app.post("/extract", response_model=ExtractResponse)
+def extract(req: ExtractRequest):
+    try:
+        result = parse_invoice_text(req.text)
+        return ExtractResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=422, detail="Invalid input")
